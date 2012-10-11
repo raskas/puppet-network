@@ -1,29 +1,47 @@
-require 'puppet'
-
 module Puppet
 
-  Puppet::Type.newtype(:network_route) do
-    @doc = "The route configuration type"
+  newtype(:network_route) do
+
+    @doc = "Manage the routing table entries"
 
     ensurable
 
-    newparam(:exclusive) do
-      d = "Enforces that no route configuration exists besides what puppet defines.\n"
-      d << "Enabled by default, set it to false in any resource to disable globally."
-      desc(d)
-
-      newvalues(:true, :false)
-      # this behaviorally defaults to true (see network_scripts.rb exists?()/initialize())
-      # using defaultto(:true) would prevent users from setting this to false
-    end
-
-    newparam(:device) do
+    newparam(:name) do
       isnamevar
-      desc "The network device for which route will be configured"
     end
 
-    newparam(:routes) do
-      desc "The routes to be configured"
+    newproperty(:enable) do
+      newvalues(:true, :false)
+      defaultto(:false)
     end
+
+    newproperty(:family) do
+      newvalues(:inet, :inet6)
+      defaultto(:inet)
+    end
+
+    newproperty(:via) do
+      desc "the  address  of  the nexthop router."
+    end
+
+    newproperty(:to) do
+      desc "the destination prefix of the route."
+    end
+
+    newproperty(:device) do
+      desc "the output device name."
+      defaultto('eth0')
+    end
+
+    newproperty(:table) do
+      desc "the table to add this route to."
+    end
+
+    # Autorequire the interface
+    autorequire(:network_interface) do
+      self[:device]
+    end
+
   end
+
 end

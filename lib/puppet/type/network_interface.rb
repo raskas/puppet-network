@@ -12,10 +12,10 @@ module Puppet
       isnamevar
       desc "The network device to be configured"
     end
-    
+
     newproperty(:state) do
       desc "state of the interface"
-      newvalues(:up, :down)
+      newvalues(:up, :down, :ignore)
       defaultto(:up)
     end
 
@@ -37,23 +37,23 @@ module Puppet
 
     newproperty(:arp) do
        desc "Arp"
-       newvalues(:on, :off)  
+       newvalues(:on, :off)
     end
-  
+
     newproperty(:multicast) do
       desc "multicast"
-      newvalues(:on, :off)  
+      newvalues(:on, :off)
     end
 
     newproperty(:dynamic) do
       desc "dynamic"
-      newvalues(:on, :off)  
+      newvalues(:on, :off)
     end
 
     newproperty(:qlen) do
       desc "txquelen"
     end
- 
+
     newproperty(:mtu) do
       desc "mtu"
     end
@@ -64,9 +64,16 @@ module Puppet
       defaultto(:no)
     end
 
-
     newproperty(:ipaddr) do
       desc "Configure the IP address of the device"
+    end
+
+    newproperty(:ipv6addr) do
+      desc "Configure the IPv6 addresses of the device as space seperated string"
+
+      munge do |value|
+        value.downcase
+      end
     end
 
     newproperty(:netmask) do
@@ -81,9 +88,31 @@ module Puppet
       end
     end
 
-    newproperty(:broadcast) do
-      desc "Configure the broadcast of the device"
+    newproperty(:master) do
+      desc "This is needed on a slave interface to point to the master"
+    end
+
+    # Autorequire the parent interface
+    autorequire(:network_interface) do
+      reqs = []
+
+      # Check if it is an alias interface (contains ':')
+      if self[:device] =~ /\:/
+        # Strip the alias entry of the devicename
+        reqs << self[:device][0,self[:device].rindex(':')]
+      # Check if it is a vlan interface (contains '.')
+      elsif self[:device] =~ /\./
+        # Strip the last vlan entry of the devicename
+        reqs << self[:device][0,self[:device].rindex('.')]
+      end
+
+      # Check if it is slave interfaces (master is defined)
+      if self[:master]
+        reqs << self[:master]
+      end
+
+      reqs
     end
 
   end
-end 
+end

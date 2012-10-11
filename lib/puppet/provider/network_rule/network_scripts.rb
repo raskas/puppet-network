@@ -1,11 +1,11 @@
-Puppet::Type.type(:network_route).provide(:network_scripts) do
+Puppet::Type.type(:network_rule).provide(:network_scripts) do
 
   commands :ip => "/sbin/ip"
   defaultfor :operatingsystem => [:redhat, :fedora, :centos]
 
   @@config_dir = '/etc/sysconfig/network-scripts/'
-  @@default_inet_target  = 'route-eth0'
-  @@default_inet6_target = 'route6-eth0'
+  @@default_inet_target  = 'rule-eth0'
+  @@default_inet6_target = 'rule6-eth0'
 
   def exists?
 
@@ -38,7 +38,7 @@ Puppet::Type.type(:network_route).provide(:network_scripts) do
 
     # Count the occurences of the rule
     count = 0
-    ip('-family', self.family, 'route', 'show', 'table', 'all').each do |ip|
+    ip('-family', self.family, 'rule', 'show').each do |ip|
       count += 1 if ip =~ /#{ip_output_from_file}/
     end
 
@@ -67,29 +67,20 @@ Puppet::Type.type(:network_route).provide(:network_scripts) do
     create_resource
   end
 
-  def via
-    @@config[@resource[:name]]['via']
+  def from
+    @@config[@resource[:name]]['from']
   end
 
-  def via=(value)
+  def from=(value)
     delete_resource
     create_resource
   end
 
-  def to
-    @@config[@resource[:name]]['to']
+  def fwmark
+    @@config[@resource[:name]]['fwmark']
   end
 
-  def to=(value)
-    delete_resource
-    create_resource
-  end
-
-  def device
-    @@config[@resource[:name]]['device']
-  end
-
-  def device=(value)
+  def fwmark=(value)
     delete_resource
     create_resource
   end
@@ -103,12 +94,23 @@ Puppet::Type.type(:network_route).provide(:network_scripts) do
     create_resource
   end
 
+  def device
+    @@config[@resource[:name]]['device']
+  end
+
+  def device=(value)
+    # Only the file is modified as the device has no impact on the rule
+    delete_file_resource
+    create_file_resource
+  end
+
+
   # Helper functions
   #####
 
   def load_on_disk_configuration
     config = Hash.new
-    Dir.glob(@@config_dir + 'route{6,}-*').each do |file|
+    Dir.glob(@@config_dir + 'rule{6,}-*').each do |file|
       File.open(file, 'r') do |f|
         f.each do |line|
           line_arr = line.split()
@@ -121,18 +123,18 @@ Puppet::Type.type(:network_route).provide(:network_scripts) do
           end
           config[name] = Hash.new
 
-          # search via
-          if line_arr.index('via').nil?
-            config[name]['via'] = nil
+          # search from
+          if line_arr.index('from').nil?
+            config[name]['from'] = nil
           else
-            config[name]['via'] = line_arr[line_arr.index('via').to_i+1]
+            config[name]['from'] = line_arr[line_arr.index('from').to_i+1]
           end
 
-          # search to
-          if line_arr.index('to').nil?
-            config[name]['to'] = nil
+          # search fwmark
+          if line_arr.index('fwmark').nil?
+            config[name]['fwmark'] = nil
           else
-            config[name]['to'] = line_arr[line_arr.index('to').to_i+1]
+            config[name]['fwmark'] = line_arr[line_arr.index('fwmark').to_i+1]
           end
 
           # search table
@@ -146,14 +148,14 @@ Puppet::Type.type(:network_route).provide(:network_scripts) do
           config[name]['file'] = file
 
           # family
-          if /route6-/.match(config[name]['file']) 
+          if /rule6-/.match(config[name]['file']) 
             config[name]['family'] = 'inet6'
           else
             config[name]['family'] = 'inet'
           end
 
           # device
-          config[name]['device'] = config[name]['file'].scan(/route6?-(.*)$/).to_s
+          config[name]['device'] = config[name]['file'].scan(/rule6?-(.*)$/).to_s
 
         end
       end
@@ -162,38 +164,36 @@ Puppet::Type.type(:network_route).provide(:network_scripts) do
     return config
   end
 
-  # Build the 'ip route add/del' command based on information received from the file
+  # Build the 'ip rule add/del' command based on information received from the file
   def ip_cmd_from_file
 
     ip_cmd = ''
-    ip_cmd += 'to '     + self.to     + ' ' if ! self.to.nil?     && ! self.to.empty?
-    ip_cmd += 'via '    + self.via    + ' ' if ! self.via.nil?    && ! self.via.empty?
-    ip_cmd += 'dev '    + self.device + ' ' if ! self.device.nil? && ! self.device.empty?
+    ip_cmd += 'from '   + self.from   + ' ' if ! self.from.nil?   && ! self.from.empty?
+    ip_cmd += 'fwmark ' + self.fwmark + ' ' if ! self.fwmark.nil? && ! self.fwmark.empty?
     ip_cmd += 'table '  + self.table  + ' ' if ! self.table.nil?  && ! self.table.empty?
     return ip_cmd
 
   end
 
-  # Build the 'ip route add/del' command based on information received from the resource
+  # Build the 'ip rule add/del' command based on information received from the resource
   def ip_cmd_from_should
 
-    ip_cmd  = ''
-    ip_cmd += 'to '     + @resource.should(:to)     + ' ' if @resource.should(:to)
-    ip_cmd += 'via '    + @resource.should(:via)    + ' ' if @resource.should(:via)
-    ip_cmd += 'dev '    + @resource.should(:device) + ' ' if @resource.should(:device)
+    ip_cmd = ''
+    ip_cmd += 'from '   + @resource.should(:from)   + ' ' if @resource.should(:from)
+    ip_cmd += 'fwmark ' + @resource.should(:fwmark) + ' ' if @resource.should(:fwmark)
     ip_cmd += 'table '  + @resource.should(:table)  + ' ' if @resource.should(:table)
     return ip_cmd
 
   end
 
-  # Build a regex which will match the 'ip route show table all' output based on information received from the file
+  # Build a regex which will match the 'ip rule show' output based on information received from the file
   def ip_output_from_file
 
-    ip_output = '^'
-    ip_output +=            self.to     + ' '   if ! self.to.nil?     && ! self.to.empty?
-    ip_output += 'via '   + self.via    + ' '   if ! self.via.nil?    && ! self.via.empty?
-    ip_output += 'dev '   + self.device + '\s+' if ! self.device.nil? && ! self.device.empty?
-    ip_output += 'table ' + self.table  + ' '   if ! self.table.nil?  && ! self.table.empty?
+    ip_output = '^\d+:\s+'
+    ip_output += 'from '   + self.from + ' '                        if ! self.from.nil?   && ! self.from.empty?
+    ip_output += 'from '   + 'all'     + ' '                        if   self.from.nil?   ||   self.from.empty?
+    ip_output += 'fwmark ' + '0x' + self.fwmark.to_i.to_s(16) + ' ' if ! self.fwmark.nil? && ! self.fwmark.empty?
+    ip_output += 'lookup ' + self.table                             if ! self.table.nil?  && ! self.table.empty?
     return ip_output
 
   end
@@ -201,11 +201,11 @@ Puppet::Type.type(:network_route).provide(:network_scripts) do
   # Build a regex which will match the 'ip rule show' output based on information from the resource
   def ip_output_from_should
 
-    ip_output = '^'
-    ip_output +=            @resource.should(:to)     + ' '   if @resource.should(:to)
-    ip_output += 'via '   + @resource.should(:via)    + ' '   if @resource.should(:via)
-    ip_output += 'dev '   + @resource.should(:device) + '\s+' if @resource.should(:device)
-    ip_output += 'table ' + @resource.should(:table)  + ' '   if @resource.should(:table)
+    ip_output = '^\d+:\s+'
+    ip_output += 'from '   + @resource.should(:from)   + ' ' if @resource.should(:from)
+    ip_output += 'from '   + 'all'              + ' ' if ! @resource.should(:from)
+    ip_output += 'fwmark ' + '0x' + @resource.should(:fwmark).to_i.to_s(16) + ' ' if @resource.should(:fwmark)
+    ip_output += 'lookup ' + @resource.should(:table)  if @resource.should(:table)
     return ip_output
 
   end
@@ -247,13 +247,13 @@ Puppet::Type.type(:network_route).provide(:network_scripts) do
 
     # Count the occurences of the rule
     count = 0
-    ip('-family', self.family, 'route', 'show', 'table', 'all').each do |ip|
+    ip('-family', self.family, 'rule', 'show').each do |ip|
       count += 1 if ip =~ /#{ip_output_from_file}/
     end
 
     # Delete every occurence of the rule
     if count > 0
-      ip('-family', self.family, 'route', 'del', ip_cmd_from_file.split(' '))
+      ip('-family', self.family, 'rule', 'del', ip_cmd_from_file.split(' '))
     end
       
   end
@@ -280,9 +280,9 @@ Puppet::Type.type(:network_route).provide(:network_scripts) do
     target = @@config_dir
 
     if @resource.should(:family) == :inet
-      target += 'route-'
+      target += 'rule-'
     else
-      target += 'route6-'
+      target += 'rule6-'
     end
     target += @resource.should(:device)
 
@@ -295,13 +295,13 @@ Puppet::Type.type(:network_route).provide(:network_scripts) do
 
     # Count the occurences of the rule
     count = 0
-    ip('-family', @resource.should(:family), 'route', 'show', 'table', 'all').each do |ip|
+    ip('-family', @resource.should(:family), 'rule', 'show').each do |ip|
       count += 1 if ip =~ /#{ip_output_from_should}/
     end
 
     # Add the rule if it wasn't found
     if count == 0
-      ip('-family', @resource.should(:family), 'route', 'add', ip_cmd_from_should.split(' '))
+      ip('-family', @resource.should(:family), 'rule', 'add', ip_cmd_from_should.split(' '))
     end
 
   end

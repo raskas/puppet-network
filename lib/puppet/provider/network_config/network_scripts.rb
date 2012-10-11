@@ -23,7 +23,7 @@ Puppet::Type.type(:network_config).provide(:network_scripts) do
     # Get any property set in the resource that isn't a metaparameter
     mp = Puppet::Type::metaparams << :ensure << :provider << :exclusive
     @resource.to_hash.delete_if { |k,v| mp.include? k }.each_pair { |k, v|
-      @memory_values[k.to_s.upcase.to_sym] = v.to_s unless v.nil?
+      @memory_values[k.to_s.upcase.to_sym] = v.to_s unless v.nil? || v.to_s.empty?
     }
 
     # handle the special hack with :exclusive

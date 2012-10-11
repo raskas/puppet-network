@@ -1,27 +1,52 @@
 Puppet::Type.type(:network_interface).provide(:ip) do
 
   # ip command is preferred over ifconfig
-  commands :ip => "/sbin/ip", :vconfig => "/sbin/vconfig"
+  commands :ip => "/sbin/ip", :vconfig => "/sbin/vconfig", :echo => "/bin/echo", :modprobe => "/sbin/modprobe", :ifenslave => "/sbin/ifenslave"
 
   # Uses the ip command to determine if the device exists
   def exists?
 #    ip('link', 'list', @resource[:name])
-    ip('addr', 'show', 'label', @resource[:device]).include?("inet")
+    ip('addr', 'show', 'label', @resource[:device]).include?("inet") || ip('addr', 'show', 'label', @resource[:device]).include?("SLAVE")
   rescue Puppet::ExecutionFailure
     return false
 #     raise Puppet::Error, "Network interface %s does not exist" % @resource[:name] 
   end 
 
   def create
-    if @resource[:vlan] == :yes && ! ip('link', 'list').include?(@resource[:name].split(':').first)
-      # Create vlan device
-      vconfig('add', @resource[:device].split('.').first, @resource[:device].split('.').last)
+    if @resource[:device].index('bond0')
+      File.open("/etc/modprobe.d/bonding.conf", 'w') do |f|
+        f.write("alias bond0 bonding\n")
+        f.write("options bonding mode=1 miimon=100 primary=eth0 updelay=120000\n")
+      end
+      modprobe('bonding')
     end
-    unless self.netmask == @resource.should(:netmask) || self.broadcast == @resource.should(:broadcast) || self.ipaddr == @resource.should(:ipaddr)
+    if @resource[:vlan] == :yes 
+      # Supporting hierarchical VLANs (QinQ)
+      vlans = @resource[:device].split(':').first.split('.')
+      iface = vlans.shift 
+      # Recursively create and bring up VLAN devices
+      vlans.each do |vlan| 
+        if ! ip('link', 'list').include?(iface+'.'+vlan+'@')
+          vconfig('add', iface, vlan)
+        end
+        iface = iface.concat('.').concat(vlan)
+        ip('link','set','up','dev', iface)
+      end 
+    end
+    unless @resource.should(:ipaddr).nil? || @resource.should(:netmask).nil? || self.netmask == @resource.should(:netmask) || self.ipaddr == @resource.should(:ipaddr)
       ip_addr_flush
       ip_addr_add
     end
-    unless self.state == @resource.should(:state)
+    unless @resource.should(:ipv6addr).nil? || self.ipv6addr == @resource.should(:ipv6addr)
+      ipv6_addr_update
+    end
+    unless @resource.should(:mtu).nil? || self.mtu == @resource.should(:mtu)
+      self.mtu=(@resource.should(:mtu))
+    end
+    unless @resource.should(:master).nil? || self.master == @resource.should(:master)
+      self.master=(@resource.should(:master))
+    end
+    unless @resource.should(:state).nil? || self.state == @resource.should(:state)
       self.state=(@resource.should(:state))
     end
   end
@@ -29,14 +54,45 @@ Puppet::Type.type(:network_interface).provide(:ip) do
   def destroy
     ip_addr_flush
     if @resource[:vlan] == :yes
-      # Test if no ip addresses are configured on this vlan device
-      if ! ip('addr', 'show', @resource[:device].split(':').first).include?("inet")
-        # Destroy vlan device
-        vconfig('rem', @resource[:device].split(':').first)
+      # Supporting hierarchical VLANs (QinQ)
+      vlans = @resource[:device].split(':').first.split('.')
+      iface = vlans.shift
+      # Recursively remove VLAN devices
+      while vlans.length > 0 
+        # Test if no hierarchical VLANs are configured on this vlan device
+        if ! ip('link', 'list').include?(iface+'.'+vlans.join('.')+'.')
+          # Test if no scope global ip addresses are configured on this vlan device
+          if ! ip('addr', 'show', iface+'.'+vlans.join('.')).include?("scope global")
+            # Destroy vlan device
+            vconfig('rem', iface+'.'+vlans.join('.'))
+          else
+            break
+          end
+        else
+          break
+        end
+        vlans.pop
       end
+    end
+    if @resource[:device].index('bond0')
+      File.unlink('/etc/modprobe.d/bonding.conf')
+      modprobe('-r', 'bonding')
     end
   end
 
+ # MASTER
+  def master
+    lines = ip('addr', 'show', 'label', @resource[:device])
+    lines.scan(/ master (.*?) /)
+    $1.nil? ? :absent : $1
+  end
+
+  def master=(value)
+    if self.master != :absent
+      ifenslave('-d', self.master, @resource[:device])
+    end
+    ifenslave(@resource[:master], @resource[:device])
+  end
 
  # NETMASK
   def netmask
@@ -46,18 +102,6 @@ Puppet::Type.type(:network_interface).provide(:ip) do
   end
 
   def netmask=(value)
-    ip_addr_flush
-    ip_addr_add
-  end
-
- # BROADCAST
-  def broadcast
-    lines = ip('addr', 'show', 'label', @resource[:device])
-    lines.scan(/\s*inet (\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b)\/(\d+) b?r?d?\s*(\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b)?\s*scope (\w+) (\w+:?\d*)/)
-    $3.nil? ? :absent : $3
-  end
-
-  def broadcast=(value)
     ip_addr_flush
     ip_addr_add
   end
@@ -74,13 +118,81 @@ Puppet::Type.type(:network_interface).provide(:ip) do
     ip_addr_add
   end
 
+ # IPV6ADDR
+  def ipv6addr
+    lines = ip('addr', 'show', 'label', @resource[:device])
+    mac=lines.scan(/\s*link\/ether\s*((?:[a-f0-9][a-f0-9]:){5}[a-f0-9][a-f0-9]).*/).to_s.split(':')
+    if ! mac.empty?
+      linkaddr="fe80::" + ((mac[0].hex.to_i^2).to_s(16) + mac[1]).gsub(/^0*/,"") + ":" + mac[2].gsub(/^0*/,"") + "ff:fe" + mac[3] + ":" + (mac[4].hex.to_i.to_s(16) + mac[5]).gsub(/^0*/,"") + "/64"
+    end
+    ipv6addresses=lines.scan(/\s*inet6 ([a-f0-9:]+\/\d+)\s*scope.*/).flatten
+    if ! linkaddr.nil?
+      unless ipv6addresses.nil? 
+        ipv6addresses.delete(linkaddr)
+      end
+    end
+    ipv6addresses.nil? ? :absent : ipv6addresses.sort.join(' ')
+  end
+
+  def ipv6addr=(value)
+    ipv6_addr_update
+  end
+
+ # MTU
+  def mtu
+    lines = ip('link', 'show', 'dev', @resource[:device])
+    lines.scan(/.* mtu (\d+) /)
+    $1.nil? ? :absent : $1
+  end
+
+  def mtu=(value)
+    ip('link', 'set', 'dev', @resource[:device], 'mtu', value)
+  end
+
   
   def ip_addr_flush
-    ip('addr', 'flush', 'dev', @resource[:device], 'label', @resource[:device].sub(/:/, '\:'))
+    ip('-4','addr', 'flush', 'dev', @resource[:device], 'label', @resource[:device].sub(/:/, '\:'))
   end
 
   def ip_addr_add
-    ip('addr', 'add', @resource[:ipaddr] + "/" + @resource[:netmask], 'broadcast', @resource[:broadcast], 'label', @resource[:device], 'dev', @resource[:device])
+    ip('addr', 'add', @resource[:ipaddr] + "/" + @resource[:netmask], 'broadcast', '+', 'label', @resource[:device], 'dev', @resource[:device])
+  end
+
+  def ipv6_addr_update
+    lines = ip('addr', 'show', 'label', @resource[:device])
+    mac=lines.scan(/\s*link\/ether\s*((?:[a-f0-9][a-f0-9]:){5}[a-f0-9][a-f0-9]).*/).to_s.split(':')
+    if ! mac.empty?
+      linkaddr="fe80::" + ((mac[0].hex.to_i^2).to_s(16) + mac[1]).gsub(/^0*/,"") + ":" + mac[2].gsub(/^0*/,"") + "ff:fe" + mac[3] + ":" + (mac[4].hex.to_i.to_s(16) + mac[5]).gsub(/^0*/,"") + "/64"
+    end
+
+    lines = ip('addr', 'show', 'label', @resource[:device])
+    ipv6addr_present=lines.scan(/\s*inet6 ([a-f0-9:]+\/\d+)\s*scope.*/).flatten
+    ipv6addr_expected=@resource[:ipv6addr].split(/\s+/)
+    if ! linkaddr.nil? 
+      ipv6addr_expected.push(linkaddr)
+    end
+
+    ipv6addr_add=Array.new(ipv6addr_expected)
+    ipv6addr_del=[]
+
+    ipv6addr_present.each do |addr|
+      if ipv6addr_expected.include?(addr)
+        ipv6addr_add.delete(addr)
+      else
+        ipv6addr_del.push(addr)
+      end
+    end
+
+    unless ipv6addr_del.empty?
+      ipv6addr_del.each do |addr|
+        ip('addr', 'del', addr, 'dev', @resource[:device])
+      end
+    end
+    unless ipv6addr_add.empty?
+      ipv6addr_add.each do |addr|
+        ip('addr', 'add', addr, 'dev', @resource[:device])
+      end
+    end
   end
 
   def device
@@ -90,6 +202,10 @@ Puppet::Type.type(:network_interface).provide(:ip) do
   # Ensurable/ensure adds unnecessary complexity to this provider
   # Network interfaces are up or down, present/absent are unnecessary
   def state
+    # When the resource is set to ':ignore', we always return :ignore
+    if @resource.should(:state) == :ignore
+      return :ignore
+    end
     lines = ip('link', 'list', @resource[:name])
     if lines.include?("UP")
       return "up"
@@ -101,7 +217,9 @@ Puppet::Type.type(:network_interface).provide(:ip) do
   # Set the interface's state
   # FIXME Facter bug #2211 prevents puppet from bringing up network devices
   def state=(value)
-    ip('link', 'set', @resource[:name], value)
+    if value != :ignore
+      ip('link', 'set', 'dev', @resource[:name], value)
+    end
   end
 
   # Current state of the device via the ip command
@@ -138,12 +256,20 @@ Puppet::Type.type(:network_interface).provide(:ip) do
     #FIXME This should capture 'NOARP' and 'MULTICAST'
     # Scan the first line of the ip command output
     line1.scan(/\d: (\w+): <(\w+),(\w+),(\w+),?(\w*)> mtu (\d+) qdisc (\w+) state (\w+)\s*\w* (\d+)*/)
+    puts $1
     values = {  
       "device"    => $1,
       "mtu"       => $6,
       "qdisc"     => $7,
       "state"     => $8,
       "qlen"      => $9, 
+    }
+    line1.scan(/^\d+: (.+): <(\w+),(\w+),(\w+),?(\w*)> mtu (\d+) qdisc (\w+) (state (\w+)\s*\w* (\d+)*)?/)
+    puts $6
+    values = {  
+      "device"    => $1,
+      "mtu"       => $6,
+      "qdisc"     => $7,
     }
     
     # Scan the second line of the ip command output
@@ -179,7 +305,7 @@ Puppet::Type.type(:network_interface).provide(:ip) do
   end
 
   #FIXME Need to support multiple inet & inet6 hashes
-  IP_ARGS = [ "qlen", "mtu", "address" ]
+  IP_ARGS = [ "qlen", "address" ]
 
   IP_ARGS.each do |ip_arg|
     define_method(ip_arg.to_s.downcase) do

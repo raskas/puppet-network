@@ -51,12 +51,16 @@ module Puppet
       desc "Configure the network of the device"
     end
 
-    newparam(:broadcast) do
-      desc "Configure the broadcast of the device"
-    end
-
     newparam(:ipaddr) do
       desc "Configure the IP address of the device"
+    end
+
+    newparam(:ipv6addr) do
+      desc "Configure the IPv6 address of the device"
+    end
+
+    newparam(:ipv6addr_secondaries) do
+      desc "Configure secondary IPv6 address of the device"
     end
 
     newparam(:gateway) do
@@ -65,6 +69,10 @@ module Puppet
 
     newparam(:hwaddr) do
       desc "Hardware address of the device"
+    end
+
+    newparam(:mtu) do
+      desc "Configure the MTU of the device"
     end
 
     newparam(:domain) do
@@ -124,6 +132,35 @@ module Puppet
     newparam(:slave) do
       desc "Configures whether or not the device is enslaved to a bonding device"
       newvalues(:yes, :no)
+    end
+
+    newparam(:ipv6init) do
+      desc "Enable/disable IPv6 configuration for the device"
+      newvalues(:yes, :no)
+    end
+
+    newparam(:onparent) do
+      newvalues(:yes, :no)
+    end
+
+    validate do
+      debug("[validate]")
+
+      # TODO: this is put here to skip validation if ensure is not set. This
+      # is because there is a revalidation stage called later where the values
+      # are not set correctly. I tried tracing it - but have put in this
+      # workaround instead to skip. Must get to the bottom of this.
+      if ! value(:ensure)
+        return
+      end
+
+      # IPv6 addresses can not be configured on an alias device
+      if value(:ipv6addr) != nil && value(:device) =~ /.*:.*/
+        self.fail "IPv6 addresses cannot be configured on alias devices (#{value(:device)})"
+      end
+      if value(:ipv6addr_secondaries) != nil && value(:device) =~ /.*:.*/
+        self.fail "IPv6 addresses cannot be configured on alias devices (#{value(:device)})"
+      end 
     end
   end
 end
